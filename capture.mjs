@@ -7,6 +7,9 @@ import { chromium } from "playwright";
 const ROOT = process.cwd();
 const PORT = 4173;
 const TILESET_URL = "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/13101-bldg-lod2-2025/tileset.json";
+const SYNC_MARKER_MILLISECONDS = 1800;
+const CAPTURE_TOUR_DURATION_MILLISECONDS = 35000;
+const CAMERA_PATH_TIMELINE_SECONDS = 64;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -105,6 +108,7 @@ try {
       "--disable-dev-shm-usage",
       "--enable-webgl",
       "--ignore-gpu-blocklist",
+      "--enable-unsafe-swiftshader",
       "--use-gl=angle",
       "--use-angle=swiftshader",
       "--hide-scrollbars",
@@ -125,7 +129,6 @@ try {
     }
   });
 
-  const pageCreatedAt = Date.now();
   page = await context.newPage();
   page.setDefaultTimeout(300000);
   page.setDefaultNavigationTimeout(300000);
@@ -163,14 +166,64 @@ try {
   console.log("LOD2 root tileset loaded; preloading camera destinations.");
   await page.evaluate(() => window.preloadWaypoints());
   await page.waitForFunction(() => window.__preloaded === true);
-  await page.screenshot({ path: "qc-loaded.png", type: "png" });
-  await page.waitForTimeout(1200);
 
-  const tourStartedAt = Date.now();
-  const preRollSeconds = Math.max(0, (tourStartedAt - pageCreatedAt) / 1000 - 0.35);
-  console.log(`Tour starting; trim offset ${preRollSeconds.toFixed(3)} seconds.`);
-  await page.evaluate(() => window.startTour());
-  await page.waitForTimeout(1000);
+  await page.evaluate(durationMs => {
+    const pathDurationSeconds = WAYPOINTS[WAYPOINTS.length - 1].t;
+    window.__captureTourDurationMs = durationMs;
+    window.startTour = function startCaptureTour() {
+      statusEl.classList.add("hidden");
+      setCamera(WAYPOINTS[0]);
+      window.__tourDone = false;
+      return new Promise(resolve => {
+        const start = performance.now();
+        function frame(now) {
+          const elapsed = Math.min(durationMs, now - start);
+          const pathSeconds = (elapsed / durationMs) * pathDurationSeconds;
+          setCamera(cameraAtTime(pathSeconds));
+          viewer.scene.requestRender();
+          if (elapsed < durationMs) requestAnimationFrame(frame);
+          else {
+            setCamera(WAYPOINTS[WAYPOINTS.length - 1]);
+            window.__tourDone = true;
+            resolve(true);
+          }
+        }
+        requestAnimationFrame(frame);
+      });
+    };
+  }, CAPTURE_TOUR_DURATION_MILLISECONDS);
+
+  await page.screenshot({ path: "qc-loaded.png", type: "png" });
+  await page.waitForTimeout(700);
+
+  console.log("Displaying full-frame synchronization marker.");
+  await page.evaluate(() => {
+    const marker = document.createElement("div");
+    marker.id = "capture-sync-marker";
+    Object.assign(marker.style, {
+      position: "fixed",
+      inset: "0",
+      zIndex: "2147483647",
+      background: "rgb(0, 255, 0)",
+      pointerEvents: "none"
+    });
+    document.body.appendChild(marker);
+  });
+  await page.waitForTimeout(SYNC_MARKER_MILLISECONDS);
+
+  const tourStartedAt = new Date();
+  console.log(`Removing synchronization marker and starting the compressed ${CAPTURE_TOUR_DURATION_MILLISECONDS / 1000}-second camera animation.`);
+  await page.evaluate(() => {
+    document.getElementById("capture-sync-marker")?.remove();
+    window.__tourDone = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.startTour();
+      });
+    });
+  });
+  await page.waitForFunction(() => window.__tourDone === true, null, { timeout: 120000 });
+  await page.waitForTimeout(2500);
   await page.screenshot({ path: "qc-final.png", type: "png" });
 
   const video = page.video();
@@ -178,21 +231,24 @@ try {
   await context.close();
   await video.saveAs("raw-capture.webm");
 
+  const tourFinishedAt = new Date();
   const meta = {
     source: TILESET_URL,
     rendering: "CesiumJS direct 3D Tiles display; no geometry or color styling applied",
+    recordingMethod: "Playwright browser screen recording with a full-frame green synchronization marker inserted after tile preloading",
     viewport: "1920x1080",
-    tourSecondsRecorded: 64,
+    cameraPathTimelineSeconds: CAMERA_PATH_TIMELINE_SECONDS,
+    captureTourAnimationSeconds: CAPTURE_TOUR_DURATION_MILLISECONDS / 1000,
     outputSecondsRequested: 60,
-    preRollSeconds,
-    pageCreatedAt: new Date(pageCreatedAt).toISOString(),
-    tourStartedAt: new Date(tourStartedAt).toISOString(),
+    synchronizationMarkerMilliseconds: SYNC_MARKER_MILLISECONDS,
+    tourStartedAt: tourStartedAt.toISOString(),
+    tourFinishedAt: tourFinishedAt.toISOString(),
     requestFailureCount: requestFailures.length
   };
   await fs.writeFile("capture-meta.json", JSON.stringify(meta, null, 2));
   await fs.writeFile("browser-console.log", consoleLines.join("\n") + "\n");
   await fs.writeFile("request-failures.log", requestFailures.join("\n") + "\n");
-  console.log("Capture complete.");
+  console.log("Smooth synchronized browser capture complete.");
 } catch (error) {
   console.error(error?.stack || error);
   await fs.writeFile("capture-error.txt", String(error?.stack || error));

@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: plateau-lod2-capture-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   capture:
     runs-on: ubuntu-latest
@@ -23,29 +27,33 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install project dependencies
         run: npm install
 
-      - name: Install Chromium and system video tools
+      - name: Install Chromium and FFmpeg
         run: |
           npx playwright install --with-deps chromium
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Record official externally distributed LOD2 tiles
         run: npm run capture
 
-      - name: Trim and encode exactly 60 seconds
+      - name: Detect the synchronized tour start
         run: |
-          START=$(node -e "const m=JSON.parse(require('fs').readFileSync('capture-meta.json','utf8')); process.stdout.write(String(m.preRollSeconds));")
-          echo "Trim offset: ${START}s"
+          START=$(node detect-sync.mjs raw-capture.webm sync-detection.json)
+          echo "Detected tour start: ${START}s"
+          echo "TRIM_START=${START}" >> "$GITHUB_ENV"
+          cat sync-detection.json
+
+      - name: Encode exactly 60 seconds with source attribution
+        run: |
           ffmpeg -y \
-            -ss "$START" \
             -i raw-capture.webm \
+            -ss "$TRIM_START" \
             -t 60 \
-            -vf "fps=30,scale=1920:1080:flags=lanczos,format=yuv420p" \
+            -vf "fps=30,scale=1920:1080:flags=lanczos,drawbox=x=14:y=ih-58:w=1020:h=44:color=black@0.50:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Source\: MLIT Project PLATEAU / Chiyoda-ku 2025 / Building LOD2':fontcolor=white:fontsize=22:x=25:y=h-th-25,format=yuv420p" \
             -c:v libx264 \
             -preset medium \
             -crf 18 \
@@ -53,7 +61,7 @@ jobs:
             -an \
             chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4
           ffprobe -v error \
-            -show_entries format=duration,size:stream=codec_name,width,height,avg_frame_rate \
+            -show_entries format=duration,size:stream=codec_name,width,height,avg_frame_rate,nb_frames \
             -of json \
             chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4 > output-probe.json
           cat output-probe.json
@@ -68,9 +76,11 @@ jobs:
           compression-level: 1
           path: |
             chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4
+            raw-capture.webm
             qc-loaded.png
             qc-final.png
             capture-meta.json
+            sync-detection.json
             output-probe.json
             tileset-probe.json
             tileset-probe-summary.json
