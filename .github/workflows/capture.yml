@@ -3,6 +3,8 @@ name: Capture Chiyoda PLATEAU LOD2
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
