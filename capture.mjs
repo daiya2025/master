@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 const ROOT = process.cwd();
 const PORT = 4173;
 const TILESET_URL = "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/13101-bldg-lod2-2025/tileset.json";
+const RECORDING_SECONDS = 61;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -105,6 +106,7 @@ try {
       "--disable-dev-shm-usage",
       "--enable-webgl",
       "--ignore-gpu-blocklist",
+      "--enable-unsafe-swiftshader",
       "--use-gl=angle",
       "--use-angle=swiftshader",
       "--hide-scrollbars",
@@ -119,13 +121,9 @@ try {
     locale: "ja-JP",
     timezoneId: "Asia/Tokyo",
     colorScheme: "light",
-    recordVideo: {
-      dir: "videos",
-      size: { width: 1920, height: 1080 }
-    }
+    acceptDownloads: true
   });
 
-  const pageCreatedAt = Date.now();
   page = await context.newPage();
   page.setDefaultTimeout(300000);
   page.setDefaultNavigationTimeout(300000);
@@ -164,35 +162,90 @@ try {
   await page.evaluate(() => window.preloadWaypoints());
   await page.waitForFunction(() => window.__preloaded === true);
   await page.screenshot({ path: "qc-loaded.png", type: "png" });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(800);
 
-  const tourStartedAt = Date.now();
-  const preRollSeconds = Math.max(0, (tourStartedAt - pageCreatedAt) / 1000 - 0.35);
-  console.log(`Tour starting; trim offset ${preRollSeconds.toFixed(3)} seconds.`);
-  await page.evaluate(() => window.startTour());
-  await page.waitForTimeout(1000);
+  const captureStartedAt = new Date();
+  console.log("Starting synchronized Cesium canvas recording and camera tour.");
+  const downloadPromise = page.waitForEvent("download", { timeout: 240000 });
+  const recordingResultPromise = page.evaluate(async recordingSeconds => {
+    const canvas = document.querySelector("#cesiumContainer canvas");
+    if (!(canvas instanceof HTMLCanvasElement)) throw new Error("Cesium render canvas not found");
+    if (typeof canvas.captureStream !== "function") throw new Error("canvas.captureStream is unavailable");
+    if (typeof MediaRecorder !== "function") throw new Error("MediaRecorder is unavailable");
+
+    const mimeType = [
+      "video/webm;codecs=vp8",
+      "video/webm;codecs=vp9",
+      "video/webm"
+    ].find(type => MediaRecorder.isTypeSupported(type));
+    if (!mimeType) throw new Error("No supported WebM MediaRecorder codec");
+
+    const stream = canvas.captureStream(30);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: 16_000_000
+    });
+    const stopped = new Promise((resolve, reject) => {
+      recorder.addEventListener("stop", resolve, { once: true });
+      recorder.addEventListener("error", event => reject(event.error || new Error("MediaRecorder error")), { once: true });
+    });
+    recorder.addEventListener("dataavailable", event => {
+      if (event.data && event.data.size > 0) chunks.push(event.data);
+    });
+
+    recorder.start(1000);
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const tourStartedAt = performance.now();
+    const tourPromise = window.startTour();
+    await new Promise(resolve => setTimeout(resolve, recordingSeconds * 1000));
+    recorder.stop();
+    await stopped;
+    const recordingStoppedAt = performance.now();
+    await tourPromise;
+
+    const blob = new Blob(chunks, { type: mimeType });
+    if (blob.size < 1_000_000) throw new Error(`Recorded WebM is unexpectedly small: ${blob.size} bytes`);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "raw-tour.webm";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    stream.getTracks().forEach(track => track.stop());
+
+    return {
+      mimeType,
+      bytes: blob.size,
+      recordingMilliseconds: recordingStoppedAt - tourStartedAt,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height
+    };
+  }, RECORDING_SECONDS);
+
+  const [download, recordingResult] = await Promise.all([downloadPromise, recordingResultPromise]);
+  await download.saveAs("raw-tour.webm");
   await page.screenshot({ path: "qc-final.png", type: "png" });
 
-  const video = page.video();
-  await page.close();
-  await context.close();
-  await video.saveAs("raw-capture.webm");
-
+  const captureFinishedAt = new Date();
   const meta = {
     source: TILESET_URL,
     rendering: "CesiumJS direct 3D Tiles display; no geometry or color styling applied",
+    recordingMethod: "HTMLCanvasElement.captureStream plus MediaRecorder after all camera destinations were preloaded",
     viewport: "1920x1080",
-    tourSecondsRecorded: 64,
     outputSecondsRequested: 60,
-    preRollSeconds,
-    pageCreatedAt: new Date(pageCreatedAt).toISOString(),
-    tourStartedAt: new Date(tourStartedAt).toISOString(),
+    rawRecordingSecondsRequested: RECORDING_SECONDS,
+    captureStartedAt: captureStartedAt.toISOString(),
+    captureFinishedAt: captureFinishedAt.toISOString(),
+    recordingResult,
     requestFailureCount: requestFailures.length
   };
   await fs.writeFile("capture-meta.json", JSON.stringify(meta, null, 2));
   await fs.writeFile("browser-console.log", consoleLines.join("\n") + "\n");
   await fs.writeFile("request-failures.log", requestFailures.join("\n") + "\n");
-  console.log("Capture complete.");
+  console.log("Synchronized LOD2 canvas capture complete.", recordingResult);
 } catch (error) {
   console.error(error?.stack || error);
   await fs.writeFile("capture-error.txt", String(error?.stack || error));
