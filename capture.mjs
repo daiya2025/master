@@ -8,6 +8,8 @@ const ROOT = process.cwd();
 const PORT = 4173;
 const TILESET_URL = "https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/13101-bldg-lod2-2025/tileset.json";
 const SYNC_MARKER_MILLISECONDS = 1800;
+const CAPTURE_TOUR_DURATION_MILLISECONDS = 35000;
+const CAMERA_PATH_TIMELINE_SECONDS = 64;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -164,6 +166,33 @@ try {
   console.log("LOD2 root tileset loaded; preloading camera destinations.");
   await page.evaluate(() => window.preloadWaypoints());
   await page.waitForFunction(() => window.__preloaded === true);
+
+  await page.evaluate(durationMs => {
+    const pathDurationSeconds = WAYPOINTS[WAYPOINTS.length - 1].t;
+    window.__captureTourDurationMs = durationMs;
+    window.startTour = function startCaptureTour() {
+      statusEl.classList.add("hidden");
+      setCamera(WAYPOINTS[0]);
+      window.__tourDone = false;
+      return new Promise(resolve => {
+        const start = performance.now();
+        function frame(now) {
+          const elapsed = Math.min(durationMs, now - start);
+          const pathSeconds = (elapsed / durationMs) * pathDurationSeconds;
+          setCamera(cameraAtTime(pathSeconds));
+          viewer.scene.requestRender();
+          if (elapsed < durationMs) requestAnimationFrame(frame);
+          else {
+            setCamera(WAYPOINTS[WAYPOINTS.length - 1]);
+            window.__tourDone = true;
+            resolve(true);
+          }
+        }
+        requestAnimationFrame(frame);
+      });
+    };
+  }, CAPTURE_TOUR_DURATION_MILLISECONDS);
+
   await page.screenshot({ path: "qc-loaded.png", type: "png" });
   await page.waitForTimeout(700);
 
@@ -183,7 +212,7 @@ try {
   await page.waitForTimeout(SYNC_MARKER_MILLISECONDS);
 
   const tourStartedAt = new Date();
-  console.log("Removing synchronization marker and starting the 64-second camera tour.");
+  console.log(`Removing synchronization marker and starting the compressed ${CAPTURE_TOUR_DURATION_MILLISECONDS / 1000}-second camera animation.`);
   await page.evaluate(() => {
     document.getElementById("capture-sync-marker")?.remove();
     window.__tourDone = false;
@@ -193,8 +222,8 @@ try {
       });
     });
   });
-  await page.waitForFunction(() => window.__tourDone === true, { timeout: 120000 });
-  await page.waitForTimeout(700);
+  await page.waitForFunction(() => window.__tourDone === true, null, { timeout: 120000 });
+  await page.waitForTimeout(2500);
   await page.screenshot({ path: "qc-final.png", type: "png" });
 
   const video = page.video();
@@ -208,7 +237,8 @@ try {
     rendering: "CesiumJS direct 3D Tiles display; no geometry or color styling applied",
     recordingMethod: "Playwright browser screen recording with a full-frame green synchronization marker inserted after tile preloading",
     viewport: "1920x1080",
-    tourSecondsRecorded: 64,
+    cameraPathTimelineSeconds: CAMERA_PATH_TIMELINE_SECONDS,
+    captureTourAnimationSeconds: CAPTURE_TOUR_DURATION_MILLISECONDS / 1000,
     outputSecondsRequested: 60,
     synchronizationMarkerMilliseconds: SYNC_MARKER_MILLISECONDS,
     tourStartedAt: tourStartedAt.toISOString(),
