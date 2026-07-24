@@ -1,0 +1,77 @@
+name: Capture Chiyoda PLATEAU LOD2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install project dependencies
+        run: npm install
+
+      - name: Install Chromium and system video tools
+        run: |
+          npx playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Record official externally distributed LOD2 tiles
+        run: npm run capture
+
+      - name: Trim and encode exactly 60 seconds
+        run: |
+          START=$(node -e "const m=JSON.parse(require('fs').readFileSync('capture-meta.json','utf8')); process.stdout.write(String(m.preRollSeconds));")
+          echo "Trim offset: ${START}s"
+          ffmpeg -y \
+            -ss "$START" \
+            -i raw-capture.webm \
+            -t 60 \
+            -vf "fps=30,scale=1920:1080:flags=lanczos,format=yuv420p" \
+            -c:v libx264 \
+            -preset medium \
+            -crf 18 \
+            -movflags +faststart \
+            -an \
+            chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4
+          ffprobe -v error \
+            -show_entries format=duration,size:stream=codec_name,width,height,avg_frame_rate \
+            -of json \
+            chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4 > output-probe.json
+          cat output-probe.json
+
+      - name: Upload capture and verification files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chiyoda-plateau-lod2-capture
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 1
+          path: |
+            chiyoda_plateau_2025_lod2_direct_capture_60sec.mp4
+            qc-loaded.png
+            qc-final.png
+            capture-meta.json
+            output-probe.json
+            tileset-probe.json
+            tileset-probe-summary.json
+            browser-console.log
+            request-failures.log
+            capture-error.txt
