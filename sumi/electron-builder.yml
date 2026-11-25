@@ -1,0 +1,35 @@
+appId: dev.sumi.editor
+productName: Sumi
+copyright: Copyright © 2026 Sumi contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+asar: true
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+  fileAssociations:
+    - ext: txt
+      name: Text file
+      role: Editor
+    - ext: md
+      name: Markdown
+      role: Editor
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Sumi
+  installerLanguages: [ja_JP, en_US]
+portable:
+  artifactName: ${productName}-${version}-portable.exe

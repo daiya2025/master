@@ -1,0 +1,39 @@
+name: Sumi Windows build
+
+on:
+  push:
+    paths:
+      - "sumi/**"
+      - ".github/workflows/sumi-windows.yml"
+  pull_request:
+    paths:
+      - "sumi/**"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: sumi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sumi/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Smoke test (fake Claude backend)
+        run: node test/smoke.test.mjs
+      - name: Build Windows installer and portable exe
+        run: npx electron-builder --win --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sumi-windows
+          path: |
+            sumi/release/*.exe
+            sumi/smoke-out/*.png
+          if-no-files-found: error

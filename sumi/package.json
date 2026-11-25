@@ -1,0 +1,37 @@
+{
+  "name": "sumi-editor",
+  "productName": "Sumi",
+  "version": "0.1.0",
+  "description": "Emacs-style text editor for Windows 11 with Claude built in",
+  "private": true,
+  "main": "dist/main/main.js",
+  "author": "Sumi contributors",
+  "license": "MIT",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node test/smoke.test.mjs",
+    "dist": "npm run build && electron-builder --win",
+    "dist:portable": "npm run build && electron-builder --win portable"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
+    "@codemirror/autocomplete": "^6.18.6",
+    "@codemirror/commands": "^6.8.1",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/language-data": "^6.5.1",
+    "@codemirror/search": "^6.5.10",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.36.5",
+    "@replit/codemirror-emacs": "^6.1.0",
+    "@types/node": "^22.15.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.25.5",
+    "typescript": "^5.8.3"
+  },
+  "_comment": "All runtime packages are bundled by esbuild into dist/, so they live in devDependencies and are not shipped as node_modules."
+}
